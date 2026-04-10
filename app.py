@@ -1,103 +1,129 @@
+
 import streamlit as st
-import face_recognition
 import numpy as np
 import cv2
+import mediapipe as mp
 import os
 
-# ======================
-# DATABASE
-# ======================
-if os.path.exists("database.npy"):
-    database = np.load("database.npy", allow_pickle=True).item()
+# =========================
+# CONFIG
+# =========================
+st.set_page_config(page_title="Biometric System", layout="centered")
+
+st.title("🔐 Face Recognition Biometric System")
+
+# =========================
+# DATABASE (simple local)
+# =========================
+DB_FILE = "database.npy"
+
+if os.path.exists(DB_FILE):
+    database = np.load(DB_FILE, allow_pickle=True).item()
 else:
     database = {}
 
-# ======================
-# SAVE DATABASE
-# ======================
 def save_db():
-    np.save("database.npy", database)
+    np.save(DB_FILE, database)
 
-# ======================
-# ENROLL FACE
-# ======================
-def enroll(name, image):
-    rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-    encodings = face_recognition.face_encodings(rgb)
+# =========================
+# FACE DETECTION (MediaPipe)
+# =========================
+mp_face = mp.solutions.face_detection
+detector = mp_face.FaceDetection(model_selection=0, min_detection_confidence=0.6)
 
-    if len(encodings) > 0:
-        database[name] = encodings[0]
-        save_db()
-        return "User enrolled successfully"
-    return "No face detected"
+# =========================
+# SIMPLE FEATURE EXTRACTION
+# (IMPORTANT: lightweight version for cloud)
+# =========================
+def get_feature_vector(img):
+    img = cv2.resize(img, (64, 64))
+    img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    return img.flatten() / 255.0
 
-# ======================
-# LOGIN
-# ======================
-def login(image):
-    rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-    encodings = face_recognition.face_encodings(rgb)
+# =========================
+# ANTI-SPOOFING (blur check)
+# =========================
+def is_real_face(img):
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    blur = cv2.Laplacian(gray, cv2.CV_64F).var()
+    return blur > 40
 
-    if len(encodings) == 0:
-        return "No face detected", 0
+# =========================
+# DISTANCE
+# =========================
+def cosine_similarity(a, b):
+    return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
 
-    input_encoding = encodings[0]
+# =========================
+# UI MENU
+# =========================
+menu = st.sidebar.selectbox("Menu", ["Enroll User", "Login", "Database"])
 
-    best_match = None
-    best_score = 0
-
-    for name, enc in database.items():
-        distance = face_recognition.face_distance([enc], input_encoding)[0]
-        score = 1 - distance
-
-        if score > best_score:
-            best_score = score
-            best_match = name
-
-    if best_score > 0.5:
-        return f"Access granted: {best_match}", best_score
-    else:
-        return "Access denied", best_score
-
-# ======================
-# STREAMLIT UI
-# ======================
-st.title("🔐 Face Recognition Login System")
-
-menu = st.sidebar.selectbox("Menu", ["Enroll User", "Login"])
-
-# ======================
+# =========================
 # ENROLL
-# ======================
+# =========================
 if menu == "Enroll User":
-    st.subheader("Register New User")
+    st.subheader("👤 Register User")
 
     name = st.text_input("Enter name")
 
-    img_file = st.camera_input("Take a photo")
+    img_file = st.camera_input("Take photo")
 
-    if img_file is not None:
+    if img_file and name:
         file_bytes = np.asarray(bytearray(img_file.read()), dtype=np.uint8)
         img = cv2.imdecode(file_bytes, 1)
 
         if st.button("Enroll"):
-            msg = enroll(name, img)
-            st.success(msg)
+            if not is_real_face(img):
+                st.error("❌ Fake or blurry image detected!")
+            else:
+                database[name] = get_feature_vector(img)
+                save_db()
+                st.success(f"✅ User {name} enrolled!")
 
-# ======================
+# =========================
 # LOGIN
-# ======================
-if menu == "Login":
-    st.subheader("Face Login")
+# =========================
+elif menu == "Login":
+    st.subheader("🔐 Login")
 
     img_file = st.camera_input("Take login photo")
 
-    if img_file is not None:
+    if img_file:
         file_bytes = np.asarray(bytearray(img_file.read()), dtype=np.uint8)
         img = cv2.imdecode(file_bytes, 1)
 
         if st.button("Login"):
-            result, score = login(img)
+            if not is_real_face(img):
+                st.error("❌ Attack detected (blur/fake image)")
+            else:
+                input_vec = get_feature_vector(img)
 
-            st.write(result)
-            st.write("Confidence:", round(score, 2))
+                best_match = None
+                best_score = 0
+
+                for name, vec in database.items():
+                    score = cosine_similarity(input_vec, vec)
+
+                    if score > best_score:
+                        best_score = score
+                        best_match = name
+
+                if best_score > 0.75:
+                    st.success(f"✅ Access Granted: {best_match}")
+                    st.write("Confidence:", round(best_score, 2))
+                else:
+                    st.error("❌ Access Denied")
+                    st.write("Confidence:", round(best_score, 2))
+
+# =========================
+# DATABASE VIEW
+# =========================
+elif menu == "Database":
+    st.subheader("📊 Registered Users")
+
+    if len(database) == 0:
+        st.warning("No users yet")
+    else:
+        for k in database.keys():
+            st.write("👤", k)
