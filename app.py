@@ -6,8 +6,8 @@ import os
 # =========================
 # CONFIG
 # =========================
-st.set_page_config(page_title="Secure Biometrics", layout="centered")
-st.title("🔐 Biometric Security System")
+st.set_page_config(page_title="Biometric Security System", layout="centered")
+st.title("🔐 Secure Biometric System (Anti-Spoofing)")
 
 DB_FILE = "db.npy"
 
@@ -31,20 +31,40 @@ def extract_features(img):
     return arr.flatten()
 
 # =========================
-# LIVENESS (ANTI PHOTO)
+# ANTI-FAKE LIVENESS (AMÉLIORÉ)
 # =========================
-def liveness(img):
+def liveness_check(img):
     arr = np.array(img.convert("L"))
-    return arr.var() > 900
+
+    variance = arr.var()
+    edges = np.mean(np.abs(np.gradient(arr)))
+
+    # score combiné
+    score = variance + edges * 50
+
+    return score > 1600
 
 # =========================
-# ANTI-DEEPFAKE (simple FFT)
+# ANTI PHONE / SCREEN ATTACK
+# =========================
+def screen_attack_detection(img):
+    arr = np.array(img.convert("L"))
+
+    # écran = patterns trop réguliers
+    freq = np.abs(np.fft.fft2(arr))
+    noise_level = np.mean(freq)
+
+    return noise_level < 80  # écran = souvent très structuré
+
+# =========================
+# ANTI-DEEPFAKE (LIGHT)
 # =========================
 def deepfake_check(img):
     arr = np.array(img.convert("L"))
     fft = np.fft.fft2(arr)
     score = np.mean(np.abs(fft))
-    return score > 40
+
+    return 30 < score < 120
 
 # =========================
 # SIMILARITY
@@ -58,18 +78,20 @@ def cosine(a, b):
 menu = st.sidebar.selectbox("Menu", ["Enroll", "Login", "Database"])
 
 # =========================
-# ENROLL
+# ENROLL USER
 # =========================
 if menu == "Enroll":
     name = st.text_input("Enter Name")
-    img_file = st.camera_input("Take Photo")
+    img_file = st.camera_input("Capture Face")
 
     if img_file and name:
         img = Image.open(img_file)
 
         if st.button("Enroll"):
-            if not liveness(img):
-                st.error("❌ Fake image detected")
+            if not liveness_check(img):
+                st.error("❌ Fake detected (no liveness)")
+            elif not screen_attack_detection(img):
+                st.error("❌ Screen / phone attack detected")
             elif not deepfake_check(img):
                 st.error("❌ Deepfake suspected")
             else:
@@ -87,8 +109,10 @@ elif menu == "Login":
         img = Image.open(img_file)
 
         if st.button("Login"):
-            if not liveness(img):
+            if not liveness_check(img):
                 st.error("❌ Liveness failed")
+            elif not screen_attack_detection(img):
+                st.error("❌ Phone / photo attack detected")
             elif not deepfake_check(img):
                 st.error("❌ Deepfake detected")
             else:
