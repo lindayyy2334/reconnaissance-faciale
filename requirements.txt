@@ -1,5 +1,8 @@
 streamlit
 numpy
-Pillow
+pillow
+opencv-python-headless
+scikit-learn
+sqlite3
+pyjwt
 cryptography
-scipy
