@@ -1,8 +1,7 @@
-streamlit
-numpy
+streamlit==1.32.0
+numpy==1.26.4
 pillow
-opencv-python-headless
-scikit-learn
-sqlite3
+scikit-learn==1.4.2
+opencv-python-headless==4.9.0.80
 pyjwt
 cryptography
