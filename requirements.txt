@@ -3,5 +3,5 @@ numpy==1.26.4
 pillow
 scikit-learn==1.4.2
 opencv-python-headless==4.9.0.80
-pyjwt
+pyjwt==2.8.0
 cryptography
