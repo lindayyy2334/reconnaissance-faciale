@@ -1,8 +1,6 @@
 import streamlit as st
 import numpy as np
 from PIL import Image
-import jwt
-import time
 import os
 
 # =========================
@@ -10,8 +8,6 @@ import os
 # =========================
 st.set_page_config(page_title="Secure Biometrics", layout="centered")
 st.title("🔐 Biometric Security System")
-
-SECRET_KEY = "MY_SECRET_KEY_123"
 
 DB_FILE = "db.npy"
 
@@ -35,14 +31,14 @@ def extract_features(img):
     return arr.flatten()
 
 # =========================
-# ANTI-SPOOFING (liveness simple)
+# LIVENESS (ANTI PHOTO)
 # =========================
 def liveness(img):
     arr = np.array(img.convert("L"))
-    return arr.var() > 900  # texture check
+    return arr.var() > 900
 
 # =========================
-# ANTI-DEEPFAKE (simple heuristic)
+# ANTI-DEEPFAKE (simple FFT)
 # =========================
 def deepfake_check(img):
     arr = np.array(img.convert("L"))
@@ -55,13 +51,6 @@ def deepfake_check(img):
 # =========================
 def cosine(a, b):
     return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
-
-# =========================
-# JWT TOKEN
-# =========================
-def generate_token(user):
-    payload = {"user": user, "time": time.time()}
-    return jwt.encode(payload, SECRET_KEY, algorithm="HS256")
 
 # =========================
 # MENU
@@ -80,7 +69,7 @@ if menu == "Enroll":
 
         if st.button("Enroll"):
             if not liveness(img):
-                st.error("❌ Fake image detected (liveness failed)")
+                st.error("❌ Fake image detected")
             elif not deepfake_check(img):
                 st.error("❌ Deepfake suspected")
             else:
@@ -99,7 +88,7 @@ elif menu == "Login":
 
         if st.button("Login"):
             if not liveness(img):
-                st.error("❌ Liveness failed (photo attack)")
+                st.error("❌ Liveness failed")
             elif not deepfake_check(img):
                 st.error("❌ Deepfake detected")
             else:
@@ -115,13 +104,11 @@ elif menu == "Login":
                         best_score = score
 
                 if best_score > 0.75:
-                    token = generate_token(best_user)
                     st.success(f"✅ Access Granted: {best_user}")
-                    st.write("Confidence:", round(best_score, 2))
-                    st.code(token)
                 else:
                     st.error("❌ Access Denied")
-                    st.write("Confidence:", round(best_score, 2))
+
+                st.write("Confidence:", round(best_score, 2))
 
 # =========================
 # DATABASE
