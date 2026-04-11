@@ -1,53 +1,54 @@
 import streamlit as st
 import numpy as np
-import sqlite3
-import hashlib
+from PIL import Image
 import jwt
 import time
-from PIL import Image
+import os
 
 # =========================
-# CONFIG SECURITY
+# CONFIG
 # =========================
-SECRET_KEY = "SUPER_SECRET_KEY_PFE"
+st.set_page_config(page_title="Secure Biometrics", layout="centered")
+st.title("🔐 Biometric Security System")
+
+SECRET_KEY = "MY_SECRET_KEY_123"
+
+DB_FILE = "db.npy"
 
 # =========================
-# DATABASE (SQLite)
+# DATABASE
 # =========================
-conn = sqlite3.connect("biometric.db", check_same_thread=False)
-c = conn.cursor()
+if os.path.exists(DB_FILE):
+    db = np.load(DB_FILE, allow_pickle=True).item()
+else:
+    db = {}
 
-c.execute("""
-CREATE TABLE IF NOT EXISTS users (
-    name TEXT,
-    embedding TEXT
-)
-""")
-conn.commit()
+def save_db():
+    np.save(DB_FILE, db)
 
 # =========================
-# FACE EMBEDDING (SIMULATED FaceNet)
+# FEATURE EXTRACTION
 # =========================
-def extract_embedding(img):
-    img = img.resize((112, 112))
+def extract_features(img):
+    img = img.resize((64, 64))
     arr = np.array(img.convert("L")) / 255.0
     return arr.flatten()
 
 # =========================
-# LIVENESS (ANTI-PHOTO)
+# ANTI-SPOOFING (liveness simple)
 # =========================
-def liveness_score(img):
+def liveness(img):
     arr = np.array(img.convert("L"))
-    return arr.var() > 1000
+    return arr.var() > 900  # texture check
 
 # =========================
-# ANTI-DEEPFAKE (frequency)
+# ANTI-DEEPFAKE (simple heuristic)
 # =========================
-def frequency_check(img):
+def deepfake_check(img):
     arr = np.array(img.convert("L"))
     fft = np.fft.fft2(arr)
     score = np.mean(np.abs(fft))
-    return score > 50
+    return score > 40
 
 # =========================
 # SIMILARITY
@@ -58,37 +59,34 @@ def cosine(a, b):
 # =========================
 # JWT TOKEN
 # =========================
-def generate_token(name):
-    payload = {"user": name, "time": time.time()}
+def generate_token(user):
+    payload = {"user": user, "time": time.time()}
     return jwt.encode(payload, SECRET_KEY, algorithm="HS256")
 
 # =========================
-# UI
+# MENU
 # =========================
-st.title("🏦 Enterprise Biometric Security System")
-
-menu = st.sidebar.selectbox("Menu", ["Enroll", "Login", "Users"])
+menu = st.sidebar.selectbox("Menu", ["Enroll", "Login", "Database"])
 
 # =========================
 # ENROLL
 # =========================
 if menu == "Enroll":
-    name = st.text_input("Name")
-    img_file = st.camera_input("Capture Face")
+    name = st.text_input("Enter Name")
+    img_file = st.camera_input("Take Photo")
 
     if img_file and name:
         img = Image.open(img_file)
 
         if st.button("Enroll"):
-            if not liveness_score(img):
-                st.error("❌ Fake detected (no liveness)")
-            elif not frequency_check(img):
+            if not liveness(img):
+                st.error("❌ Fake image detected (liveness failed)")
+            elif not deepfake_check(img):
                 st.error("❌ Deepfake suspected")
             else:
-                emb = extract_embedding(img)
-                c.execute("INSERT INTO users VALUES (?,?)", (name, str(emb.tolist())))
-                conn.commit()
-                st.success("✅ User enrolled securely")
+                db[name] = extract_features(img)
+                save_db()
+                st.success(f"✅ User {name} enrolled")
 
 # =========================
 # LOGIN
@@ -100,37 +98,39 @@ elif menu == "Login":
         img = Image.open(img_file)
 
         if st.button("Login"):
-            if not liveness_score(img):
-                st.error("🚨 Liveness failed")
-            elif not frequency_check(img):
-                st.error("🚨 Deepfake detected")
+            if not liveness(img):
+                st.error("❌ Liveness failed (photo attack)")
+            elif not deepfake_check(img):
+                st.error("❌ Deepfake detected")
             else:
-                emb = extract_embedding(img)
+                features = extract_features(img)
 
-                c.execute("SELECT * FROM users")
-                users = c.fetchall()
-
-                best = None
+                best_user = None
                 best_score = 0
 
-                for name, db_emb in users:
-                    db_emb = np.array(eval(db_emb))
-                    score = cosine(emb, db_emb)
-
+                for name, vec in db.items():
+                    score = cosine(features, vec)
                     if score > best_score:
-                        best = name
+                        best_user = name
                         best_score = score
 
                 if best_score > 0.75:
-                    token = generate_token(best)
-                    st.success(f"Access granted: {best}")
-                    st.write("JWT Token:", token)
+                    token = generate_token(best_user)
+                    st.success(f"✅ Access Granted: {best_user}")
+                    st.write("Confidence:", round(best_score, 2))
+                    st.code(token)
                 else:
-                    st.error("Access denied")
+                    st.error("❌ Access Denied")
+                    st.write("Confidence:", round(best_score, 2))
 
 # =========================
-# USERS
+# DATABASE
 # =========================
-elif menu == "Users":
-    c.execute("SELECT name FROM users")
-    st.write([u[0] for u in c.fetchall()])
+elif menu == "Database":
+    st.subheader("📊 Registered Users")
+
+    if len(db) == 0:
+        st.warning("No users registered")
+    else:
+        for k in db.keys():
+            st.write("👤", k)
