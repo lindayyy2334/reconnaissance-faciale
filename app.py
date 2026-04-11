@@ -1,7 +1,7 @@
 import streamlit as st
 import numpy as np
 import mediapipe as mp
-from PIL import Image
+from Pillow  import Image
 import os
 
 # =========================
