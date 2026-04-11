@@ -3,66 +3,114 @@ import numpy as np
 from PIL import Image
 import os
 
-st.set_page_config(page_title="Biometric System", layout="centered")
-st.title("🔐 Simple Biometric System (Cloud Safe)")
+st.set_page_config(page_title="Secure Biometrics", layout="centered")
 
-DB_FILE = "database.npy"
+st.title("🛡️ Face Authentication + Liveness Detection")
+
+DB_FILE = "db.npy"
 
 if os.path.exists(DB_FILE):
-    database = np.load(DB_FILE, allow_pickle=True).item()
+    db = np.load(DB_FILE, allow_pickle=True).item()
 else:
-    database = {}
+    db = {}
 
 def save_db():
-    np.save(DB_FILE, database)
+    np.save(DB_FILE, db)
 
-def get_vector(img):
+# =========================
+# FEATURE EXTRACTION
+# =========================
+def extract_features(img):
     img = img.resize((64, 64))
-    img = np.array(img.convert("L"))
-    return img.flatten() / 255.0
+    img = np.array(img.convert("L")) / 255.0
+    return img.flatten()
 
+# =========================
+# ANTI-FAKE (liveness)
+# =========================
+def liveness_score(img):
+    arr = np.array(img.convert("L"))
+
+    # 1. blur / texture
+    variance = arr.var()
+
+    # 2. edge richness (fake images are smoother)
+    edges = np.mean(np.abs(np.gradient(arr)))
+
+    score = variance + edges * 50
+    return score
+
+def is_live(img):
+    score = liveness_score(img)
+    return score > 1200, score  # threshold adjustable
+
+# =========================
+# SIMILARITY
+# =========================
 def cosine(a, b):
     return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
 
+# =========================
+# UI
+# =========================
 menu = st.sidebar.selectbox("Menu", ["Enroll", "Login", "Database"])
 
+# =========================
 # ENROLL
+# =========================
 if menu == "Enroll":
     name = st.text_input("Name")
-    img_file = st.camera_input("Take photo")
+    img_file = st.camera_input("Take face photo")
 
     if img_file and name:
         img = Image.open(img_file)
 
-        if st.button("Enroll"):
-            database[name] = get_vector(img)
-            save_db()
-            st.success("User enrolled!")
+        live, score = is_live(img)
 
+        st.write("Liveness score:", score)
+
+        if st.button("Enroll"):
+            if not live:
+                st.error("❌ Fake image detected (no liveness)")
+            else:
+                db[name] = extract_features(img)
+                save_db()
+                st.success("✅ User enrolled")
+
+# =========================
 # LOGIN
+# =========================
 elif menu == "Login":
-    img_file = st.camera_input("Take photo")
+    img_file = st.camera_input("Take login photo")
 
     if img_file:
         img = Image.open(img_file)
 
+        live, score = is_live(img)
+        st.write("Liveness score:", score)
+
         if st.button("Login"):
-            vec = get_vector(img)
-
-            best, score = None, 0
-
-            for name, v in database.items():
-                s = cosine(vec, v)
-                if s > score:
-                    best, score = name, s
-
-            if score > 0.75:
-                st.success(f"Access granted: {best}")
+            if not live:
+                st.error("🚨 Fake / photo attack detected")
             else:
-                st.error("Access denied")
+                vec = extract_features(img)
 
-            st.write("Confidence:", round(score, 2))
+                best, best_score = None, 0
 
+                for name, v in db.items():
+                    s = cosine(vec, v)
+                    if s > best_score:
+                        best, best_score = name, s
+
+                if best_score > 0.75:
+                    st.success(f"Access granted: {best}")
+                else:
+                    st.error("Access denied")
+
+                st.write("Similarity:", best_score)
+
+# =========================
 # DATABASE
+# =========================
 elif menu == "Database":
-    st.write(database)
+    st.write(db)
