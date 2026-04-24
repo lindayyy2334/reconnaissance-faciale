@@ -1,7 +1,7 @@
 streamlit
-face-recognition
-opencv-python-headless
+opencv-python-headless==4.8.1.78
 numpy
 scipy
-mediapipe
 Pillow
+face-recognition
+face-recognition-models
