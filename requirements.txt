@@ -1,7 +1,7 @@
-fastapi
-uvicorn
-numpy
+streamlit
+face-recognition
 opencv-python-headless
+numpy
+scipy
 mediapipe
-tensorflow
-keras
+Pillow
