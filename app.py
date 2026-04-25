@@ -1,53 +1,31 @@
 import streamlit as st
-import cv2
 import numpy as np
-import mediapipe as mp
 import hashlib
 import hmac
 import os
 from PIL import Image
+import pandas as pd
+from skimage import color, feature, transform, filters, exposure
+from scipy.spatial.distance import cosine
 
 # ─────────────────────────────────────────────
-# CONFIG PAGE
+# CONFIG
 # ─────────────────────────────────────────────
-st.set_page_config(
-    page_title="Lab Biométrie",
-    page_icon="🔐",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+st.set_page_config(page_title="Lab Biométrie", page_icon="🔐", layout="wide")
 
-# ─────────────────────────────────────────────
-# CSS PERSONNALISÉ
-# ─────────────────────────────────────────────
 st.markdown("""
 <style>
-    .stApp { background-color: #0d1117; color: #e6edf3; }
-    .main-title { font-size: 2rem; font-weight: 700; color: #58a6ff; margin-bottom: 0.2rem; }
-    .sub-title  { font-size: 0.95rem; color: #8b949e; margin-bottom: 1.5rem; }
-    .metric-card {
-        background: #161b22; border: 1px solid #30363d;
-        border-radius: 10px; padding: 1rem; text-align: center; margin: 0.3rem 0;
-    }
-    .status-ok   { color: #3fb950; font-weight: 700; font-size: 1.3rem; }
-    .status-fail { color: #f85149; font-weight: 700; font-size: 1.3rem; }
-    .info-box {
-        background: #161b22; border-left: 4px solid #58a6ff;
-        border-radius: 6px; padding: 0.8rem 1rem; margin: 0.5rem 0;
-        font-size: 0.9rem; color: #8b949e;
-    }
-    .hash-box {
-        background: #0d1117; border: 1px solid #30363d;
-        border-radius: 6px; padding: 0.6rem 1rem;
-        font-family: monospace; font-size: 0.8rem; color: #79c0ff;
-        word-break: break-all;
-    }
-    div[data-testid="stButton"] button {
-        background: #238636; color: white; border: none;
-        border-radius: 6px; font-weight: 600;
-        transition: background 0.2s;
-    }
-    div[data-testid="stButton"] button:hover { background: #2ea043; }
+    .main-title { font-size:2rem; font-weight:700; color:#58a6ff; margin-bottom:0.2rem; }
+    .sub-title  { font-size:0.95rem; color:#8b949e; margin-bottom:1.5rem; }
+    .info-box   { background:#161b22; border-left:4px solid #58a6ff; border-radius:6px;
+                  padding:0.8rem 1rem; margin:0.5rem 0; font-size:0.9rem; color:#c9d1d9; }
+    .hash-box   { background:#0d1117; border:1px solid #30363d; border-radius:6px;
+                  padding:0.6rem 1rem; font-family:monospace; font-size:0.8rem;
+                  color:#79c0ff; word-break:break-all; margin:0.3rem 0; }
+    .result-ok  { background:#0d4429; border:1px solid #3fb950; border-radius:10px;
+                  padding:1.2rem; text-align:center; margin:1rem 0; }
+    .result-fail{ background:#2d1117; border:1px solid #f85149; border-radius:10px;
+                  padding:1.2rem; text-align:center; margin:1rem 0; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -56,153 +34,151 @@ st.markdown("""
 # ─────────────────────────────────────────────
 if "database" not in st.session_state:
     st.session_state.database = {}
-
 database = st.session_state.database
 
 # ─────────────────────────────────────────────
-# MEDIAPIPE INIT
-# ─────────────────────────────────────────────
-mp_face_mesh   = mp.solutions.face_mesh
-mp_face_detect = mp.solutions.face_detection
-mp_drawing     = mp.solutions.drawing_utils
-
-# ─────────────────────────────────────────────
-# FONCTIONS CŒUR
+# FONCTIONS CŒUR  (pur NumPy / scikit-image)
 # ─────────────────────────────────────────────
 
-def pil_to_bgr(pil_img):
-    """Convertit une image PIL en tableau BGR pour OpenCV."""
-    rgb = np.array(pil_img.convert("RGB"))
-    return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+def pil_to_gray(pil_img):
+    """PIL → tableau float64 niveaux de gris [0,1]."""
+    return color.rgb2gray(np.array(pil_img.convert("RGB")))
 
 
-def get_face_embedding(image_bgr):
+def detect_face_simple(gray):
     """
-    Extrait un embedding facial via MediaPipe FaceMesh.
-    Retourne un vecteur normalisé 1404 dimensions (468 landmarks × 3),
-    ou None si aucun visage n'est détecté.
+    Détection de visage simplifiée basée sur la variance locale :
+    - divise l'image en régions et trouve la zone la plus 'active'
+    - retourne (y, x, h, w) de la meilleure région.
+    Pour un vrai Haar Cascade sans cv2, on utilise cette heuristique légère.
     """
-    image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
-    with mp_face_mesh.FaceMesh(
-        static_image_mode=True,
-        max_num_faces=1,
-        refine_landmarks=True,
-        min_detection_confidence=0.4
-    ) as face_mesh:
-        results = face_mesh.process(image_rgb)
-
-    if not results.multi_face_landmarks:
-        return None
-
-    lm = results.multi_face_landmarks[0].landmark
-    vec = np.array([[l.x, l.y, l.z] for l in lm]).flatten()
-    norm = np.linalg.norm(vec)
-    return vec / (norm + 1e-8)
-
-
-def face_detected(image_bgr):
-    """Vérifie rapidement si un visage est présent."""
-    image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
-    with mp_face_detect.FaceDetection(min_detection_confidence=0.4) as det:
-        results = det.process(image_rgb)
-    return bool(results.detections)
+    h, w = gray.shape
+    # Grille 4×4
+    rows, cols = 4, 4
+    rh, rw = h // rows, w // cols
+    best_var, best_coords = 0, (h//4, w//4, h//2, w//2)
+    for r in range(rows):
+        for c in range(cols):
+            y1, y2 = r*rh, (r+1)*rh
+            x1, x2 = c*rw, (c+1)*rw
+            region = gray[y1:y2, x1:x2]
+            var = float(np.var(region))
+            if var > best_var:
+                best_var = var
+                best_coords = (y1, x1, y2-y1, x2-x1)
+    return best_coords  # (y, x, h, w)
 
 
-def enroll_user(name, image_bgr):
-    """Enregistre un utilisateur avec son embedding MediaPipe."""
-    embedding = get_face_embedding(image_bgr)
-    if embedding is not None:
-        database[name] = {"template": embedding.tolist()}
-        return True, embedding
-    return False, None
+def get_embedding(pil_img):
+    """
+    Embedding facial via HOG (scikit-image) sur ROI 64×64.
+    Retourne un vecteur normalisé L2.
+    """
+    gray = pil_to_gray(pil_img)
+    y, x, h, w = detect_face_simple(gray)
+    roi  = gray[y:y+h, x:x+w]
+    roi  = transform.resize(roi, (64, 64), anti_aliasing=True)
+
+    # HOG descriptor
+    fd = feature.hog(
+        roi,
+        orientations=9,
+        pixels_per_cell=(8, 8),
+        cells_per_block=(2, 2),
+        feature_vector=True
+    )
+    norm = np.linalg.norm(fd)
+    return fd / (norm + 1e-8)
 
 
-def recognize_user(image_bgr):
-    """Compare l'embedding courant à la base de données (similarité cosinus)."""
-    embedding = get_face_embedding(image_bgr)
-    if embedding is None:
-        return None, 0.0, {}
+def draw_face_box(pil_img):
+    """Dessine un rectangle sur le visage détecté, retourne PIL Image."""
+    gray = pil_to_gray(pil_img)
+    y, x, h, w = detect_face_simple(gray)
+    arr = np.array(pil_img.convert("RGB")).copy()
+    # Dessiner le rectangle (bleu)
+    thickness = 3
+    arr[y:y+thickness,   x:x+w]   = [88, 166, 255]
+    arr[y+h:y+h+thickness, x:x+w] = [88, 166, 255]
+    arr[y:y+h, x:x+thickness]     = [88, 166, 255]
+    arr[y:y+h, x+w:x+w+thickness] = [88, 166, 255]
+    return Image.fromarray(arr)
 
+
+def enroll_user(name, pil_img):
+    emb = get_embedding(pil_img)
+    database[name] = {"template": emb.tolist()}
+    return emb
+
+
+def recognize_user(pil_img):
+    emb = get_embedding(pil_img)
     scores = {}
     for name, data in database.items():
         stored = np.array(data["template"])
-        similarity = float(np.dot(embedding, stored))  # vecteurs déjà normalisés
-        scores[name] = round(max(0.0, similarity), 4)
-
+        sim    = float(np.dot(emb, stored))
+        scores[name] = round(max(0.0, sim), 4)
     if not scores:
         return None, 0.0, {}
+    best = max(scores, key=scores.get)
+    return best, scores[best], scores
 
-    best_match = max(scores, key=scores.get)
-    return best_match, scores[best_match], scores
 
-
-def anti_spoofing(image_bgr):
-    """
-    3 métriques de vivacité :
-    - Netteté (Laplacian variance) : photo floue/écran = faible score
-    - Texture locale : impressions papier = texture plate
-    - Saturation : LCD/impression altèrent les couleurs
-    Retourne dict {label: (valeur, seuil, ok)}
-    """
-    gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
-    blur_score = cv2.Laplacian(gray, cv2.CV_64F).var()
-    texture    = float(np.std(gray.astype(np.float32)))
-    hsv        = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2HSV)
-    saturation = float(hsv[:, :, 1].mean())
-
+def anti_spoofing(pil_img):
+    gray  = pil_to_gray(pil_img)
+    # Netteté : Laplacian variance
+    lap   = filters.laplace(gray)
+    blur  = round(float(np.var(lap) * 1000), 1)
+    # Texture : écart-type local
+    tex   = round(float(np.std(gray) * 100), 1)
+    # Saturation
+    rgb   = np.array(pil_img.convert("RGB")).astype(float) / 255.0
+    cmax  = rgb.max(axis=2)
+    cmin  = rgb.min(axis=2)
+    sat   = round(float(np.mean(np.where(cmax == 0, 0, (cmax - cmin) / (cmax + 1e-8)))) * 100, 1)
     return {
-        "Netteté":    (round(blur_score, 1), 50,  blur_score > 50),
-        "Texture":    (round(texture, 1),    20,  texture > 20),
-        "Saturation": (round(saturation, 1), 30,  saturation > 30),
+        "Netteté":    (blur, 5,  blur > 5),
+        "Texture":    (tex,  5,  tex  > 5),
+        "Saturation": (sat,  10, sat  > 10),
     }
 
 
-# ─── MÉTHODES DE PROTECTION ───────────────────
+# ── PROTECTION ─────────────────────────────────────────────────
 
 def bio_hash(encoding, salt=None):
-    """Bio-Hashing : template → vecteur binaire → HMAC-SHA256."""
     if salt is None:
         salt = os.urandom(32)
-    rng = np.random.default_rng(int.from_bytes(salt[:8], "big"))
-    mat = rng.standard_normal((len(encoding), len(encoding) // 2))
-    proj = encoding @ mat
-    vec  = (proj > 0).astype(int)
+    rng  = np.random.default_rng(int.from_bytes(salt[:8], "big"))
+    mat  = rng.standard_normal((len(encoding), len(encoding) // 2))
+    vec  = (encoding @ mat > 0).astype(int)
     h    = hmac.new(salt, vec.tobytes(), hashlib.sha256).hexdigest()
     return h, salt, vec
 
 
 def cancelable_transform(encoding, key):
-    """Transformation non-inversible : permutation + seuillage aléatoire."""
     rng  = np.random.default_rng(int.from_bytes(key[:8], "big"))
     perm = rng.permutation(len(encoding))
-    threshold = rng.uniform(-0.05, 0.05, len(encoding))
-    return np.sign(encoding[perm] - threshold)
+    return np.sign(encoding[perm] - rng.uniform(-0.05, 0.05, len(encoding)))
 
 
 def anonymize(encoding):
-    """Biométrie anonyme : SHA-256 sans nom stocké."""
     salt = os.urandom(16)
-    anon_id = hashlib.sha256(encoding.tobytes() + salt).hexdigest()
-    return anon_id, salt
+    return hashlib.sha256(encoding.tobytes() + salt).hexdigest(), salt
 
 
 # ─────────────────────────────────────────────
-# SIDEBAR NAVIGATION
+# SIDEBAR
 # ─────────────────────────────────────────────
 st.sidebar.markdown("## 🔐 Lab Biométrie")
 st.sidebar.markdown("---")
 page = st.sidebar.radio("Navigation", [
-    "📸 Enrollment",
-    "🔓 Login",
-    "🛡️ Protection avancée",
-    "📊 Comparatif"
+    "📸 Enrollment", "🔓 Login", "🛡️ Protection avancée", "📊 Comparatif"
 ])
 st.sidebar.markdown("---")
 st.sidebar.markdown(f"**👥 Utilisateurs :** {len(database)}")
-if database:
-    for n in database:
-        st.sidebar.markdown(f"- {n}")
-if st.sidebar.button("🗑️ Réinitialiser la base"):
+for n in database:
+    st.sidebar.markdown(f"- {n}")
+if st.sidebar.button("🗑️ Réinitialiser"):
     st.session_state.database = {}
     st.rerun()
 
@@ -213,36 +189,31 @@ if page == "📸 Enrollment":
     st.markdown('<div class="main-title">📸 Enregistrement</div>', unsafe_allow_html=True)
     st.markdown('<div class="sub-title">Capturez votre visage pour l\'enregistrer dans la base biométrique.</div>', unsafe_allow_html=True)
 
-    col1, col2 = st.columns([1, 1])
-
+    col1, col2 = st.columns(2)
     with col1:
-        name = st.text_input("Nom de l'utilisateur", placeholder="ex: Yasmine")
+        name     = st.text_input("Nom", placeholder="ex: Yasmine")
         img_file = st.camera_input("📷 Prendre une photo")
 
         if img_file:
             pil_img = Image.open(img_file)
-            image_bgr = pil_to_bgr(pil_img)
+            st.image(draw_face_box(pil_img), caption="Détection ROI", use_container_width=True)
 
             if st.button("✅ Enregistrer", use_container_width=True):
                 if not name.strip():
                     st.error("❌ Entrez un nom d'abord")
                 else:
-                    with st.spinner("Extraction de l'embedding..."):
-                        ok, emb = enroll_user(name.strip(), image_bgr)
-                    if ok:
-                        st.success(f"✅ **{name}** enregistré avec succès !")
-                        st.markdown(f'<div class="info-box">Embedding : vecteur 1404 dimensions (468 landmarks × 3 coords) — normalisé L2</div>', unsafe_allow_html=True)
-                    else:
-                        st.error("❌ Aucun visage détecté — réessayez avec un meilleur éclairage")
+                    emb = enroll_user(name.strip(), pil_img)
+                    st.success(f"✅ **{name}** enregistré ! Embedding HOG : {len(emb)} dimensions")
 
     with col2:
-        st.markdown("### ℹ️ Comment ça fonctionne")
+        st.markdown("### ℹ️ Pipeline")
         st.markdown("""
 <div class="info-box">
-<b>1. Détection</b> — MediaPipe FaceMesh localise 468 points de repère (landmarks) sur votre visage.<br><br>
-<b>2. Embedding</b> — Les coordonnées 3D de chaque landmark forment un vecteur de 1404 dimensions.<br><br>
-<b>3. Normalisation</b> — Le vecteur est normalisé (norme L2 = 1) pour la comparaison par cosinus.<br><br>
-<b>4. Stockage</b> — Seul le vecteur normalisé est conservé en mémoire de session.
+<b>1. ROI</b> — Sélection de la zone la plus active (variance max).<br><br>
+<b>2. Resize 64×64</b> — Normalisation de la taille.<br><br>
+<b>3. HOG descriptor</b> — Histogram of Oriented Gradients via scikit-image
+(cellules 8×8, blocs 2×2, 9 orientations).<br><br>
+<b>4. Normalisation L2</b> — Vecteur prêt pour similarité cosinus.
 </div>
 """, unsafe_allow_html=True)
 
@@ -251,273 +222,128 @@ if page == "📸 Enrollment":
 # ─────────────────────────────────────────────
 elif page == "🔓 Login":
     st.markdown('<div class="main-title">🔓 Connexion biométrique</div>', unsafe_allow_html=True)
-    st.markdown('<div class="sub-title">Authentification par reconnaissance faciale avec vérification de vivacité.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sub-title">Authentification faciale + vérification de vivacité.</div>', unsafe_allow_html=True)
 
     if not database:
         st.warning("⚠️ Aucun utilisateur enregistré. Allez d'abord sur **Enrollment**.")
     else:
         img_file = st.camera_input("📷 Capturez votre visage")
-
         if img_file:
-            pil_img   = Image.open(img_file)
-            image_bgr = pil_to_bgr(pil_img)
+            pil_img = Image.open(img_file)
+            st.image(draw_face_box(pil_img), caption="Détection", use_container_width=True)
 
-            # ── Anti-Spoofing ──
-            st.markdown("### 🔍 Vérification de vivacité")
-            spoof_scores = anti_spoofing(image_bgr)
-            cols = st.columns(3)
+            # Anti-Spoofing
+            st.markdown("### 🔍 Vivacité")
+            spoof  = anti_spoofing(pil_img)
+            cols   = st.columns(3)
             passed = 0
-            for i, (label, (val, threshold, ok)) in enumerate(spoof_scores.items()):
+            for i, (label, (val, thr, ok)) in enumerate(spoof.items()):
                 with cols[i]:
-                    icon   = "✅" if ok else "❌"
-                    status = "status-ok" if ok else "status-fail"
-                    st.markdown(f"""
-<div class="metric-card">
-  <div class="{status}">{icon} {label}</div>
-  <div style="font-size:1.4rem;font-weight:700;margin:0.3rem 0">{val}</div>
-  <div style="color:#8b949e;font-size:0.8rem">seuil : {threshold}</div>
-</div>""", unsafe_allow_html=True)
+                    st.metric(f"{'✅' if ok else '❌'} {label}", val, f"seuil {thr}")
                 if ok:
                     passed += 1
 
-            st.markdown(f"**Score de vivacité : {passed}/3**")
-
+            st.markdown(f"**Score : {passed}/3**")
             if passed < 2:
-                st.error("🚨 **Attaque possible détectée !** Image suspecte (photo, écran ou masque).")
+                st.error("🚨 Image suspecte — possible attaque !")
                 st.stop()
-
             st.success("✅ Vivacité confirmée")
             st.markdown("---")
 
-            # ── Reconnaissance ──
-            st.markdown("### 🧠 Reconnaissance faciale")
-            with st.spinner("Analyse en cours..."):
-                best, score, all_scores = recognize_user(image_bgr)
-
-            if all_scores:
-                for name_db, s in sorted(all_scores.items(), key=lambda x: -x[1]):
-                    bar_color = "#3fb950" if s > 0.5 else "#8b949e"
-                    st.markdown(f"**{name_db}** — {s:.2%}")
-                    st.progress(min(s, 1.0))
+            # Reconnaissance
+            st.markdown("### 🧠 Reconnaissance")
+            best, score, all_scores = recognize_user(pil_img)
+            for n, s in sorted(all_scores.items(), key=lambda x: -x[1]):
+                st.markdown(f"**{n}** — {s:.2%}")
+                st.progress(min(float(s), 1.0))
 
             st.markdown("---")
-            THRESHOLD = 0.50
+            THRESHOLD = 0.6
             if best and score >= THRESHOLD:
-                st.markdown(f"""
-<div style="background:#0d4429;border:1px solid #3fb950;border-radius:10px;padding:1.2rem;text-align:center">
-  <div style="font-size:2rem">✅</div>
-  <div style="font-size:1.3rem;font-weight:700;color:#3fb950">Accès accordé</div>
-  <div style="color:#e6edf3;margin-top:0.3rem">Bienvenue <b>{best}</b> — Confiance : {score:.2%}</div>
-</div>""", unsafe_allow_html=True)
+                st.markdown(f'<div class="result-ok"><div style="font-size:2rem">✅</div><div style="font-size:1.3rem;font-weight:700;color:#3fb950">Accès accordé</div><div style="color:#e6edf3">Bienvenue <b>{best}</b> — {score:.2%}</div></div>', unsafe_allow_html=True)
                 st.balloons()
             else:
-                st.markdown(f"""
-<div style="background:#2d1117;border:1px solid #f85149;border-radius:10px;padding:1.2rem;text-align:center">
-  <div style="font-size:2rem">❌</div>
-  <div style="font-size:1.3rem;font-weight:700;color:#f85149">Accès refusé</div>
-  <div style="color:#8b949e;margin-top:0.3rem">Score maximum : {score:.2%} (seuil : {THRESHOLD:.0%})</div>
-</div>""", unsafe_allow_html=True)
+                st.markdown(f'<div class="result-fail"><div style="font-size:2rem">❌</div><div style="font-size:1.3rem;font-weight:700;color:#f85149">Accès refusé</div><div style="color:#8b949e">Score : {score:.2%} — seuil : {THRESHOLD:.0%}</div></div>', unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────
-# PAGE 3 — PROTECTION AVANCÉE
+# PAGE 3 — PROTECTION
 # ─────────────────────────────────────────────
 elif page == "🛡️ Protection avancée":
     st.markdown('<div class="main-title">🛡️ Méthodes de protection</div>', unsafe_allow_html=True)
-    st.markdown('<div class="sub-title">Démonstration interactive des techniques de protection des templates biométriques.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sub-title">Démonstration des techniques de protection des templates biométriques.</div>', unsafe_allow_html=True)
 
     img_file = st.camera_input("📷 Image de démonstration")
-
     if img_file:
-        pil_img   = Image.open(img_file)
-        image_bgr = pil_to_bgr(pil_img)
+        pil_img = Image.open(img_file)
+        emb = get_embedding(pil_img)
+        st.success(f"✅ Embedding HOG extrait — {len(emb)} dimensions")
+        st.markdown("---")
 
-        with st.spinner("Extraction de l'embedding..."):
-            embedding = get_face_embedding(image_bgr)
+        tab1, tab2, tab3 = st.tabs(["🔑 Bio-Hashing", "🔄 Cancelable", "🎭 Anonyme"])
 
-        if embedding is None:
-            st.error("❌ Aucun visage détecté — réessayez")
-        else:
-            st.success(f"✅ Embedding extrait — {len(embedding)} dimensions")
-            st.markdown("---")
+        with tab1:
+            st.markdown("### 🔑 Bio-Hashing")
+            st.markdown('<div class="info-box">Projection sur matrice pseudo-aléatoire (sel secret) → vecteur binaire → HMAC-SHA256. Le template brut n\'est jamais stocké. Si compromis : changer le sel → nouveau hash.</div>', unsafe_allow_html=True)
+            h, salt, vec = bio_hash(emb)
+            c1, c2 = st.columns(2)
+            with c1:
+                st.markdown("**Hash HMAC-SHA256**")
+                st.markdown(f'<div class="hash-box">{h}</div>', unsafe_allow_html=True)
+                st.markdown("**Sel (32 octets)**")
+                st.markdown(f'<div class="hash-box">{salt.hex()}</div>', unsafe_allow_html=True)
+            with c2:
+                st.markdown("**Vecteur binaire (64 bits)**")
+                st.markdown(f'<div class="hash-box">{"".join(str(b) for b in vec[:64])}</div>', unsafe_allow_html=True)
+                st.markdown('<div class="info-box">✅ Template brut : NON STOCKÉ<br>✅ Révocable<br>✅ Non-inversible</div>', unsafe_allow_html=True)
+            h2, _, _ = bio_hash(emb, salt=salt)
+            st.success("✅ Même sel → hash identique (auth OK)") if h == h2 else st.error("❌")
+            h3, _, _ = bio_hash(emb, salt=os.urandom(32))
+            st.info(f"🔄 Sel différent → `{h3[:32]}...`")
 
-            tab1, tab2, tab3 = st.tabs([
-                "🔑 Bio-Hashing",
-                "🔄 Cancelable Biometrics",
-                "🎭 Biométrie Anonyme"
-            ])
+        with tab2:
+            st.markdown("### 🔄 Cancelable Biometrics")
+            st.markdown('<div class="info-box">Permutation + seuillage par clé secrète. Même visage + clé différente = template totalement différent. Révocable en changeant la clé.</div>', unsafe_allow_html=True)
+            k1, k2 = os.urandom(16), os.urandom(16)
+            t1, t2 = cancelable_transform(emb, k1), cancelable_transform(emb, k2)
+            c1, c2 = st.columns(2)
+            with c1:
+                st.markdown("**Clé 1**")
+                st.markdown(f'<div class="hash-box">{k1.hex()[:16]}...<br>[{", ".join(str(int(x)) for x in t1[:12])}...]</div>', unsafe_allow_html=True)
+            with c2:
+                st.markdown("**Clé 2 (même visage)**")
+                st.markdown(f'<div class="hash-box">{k2.hex()[:16]}...<br>[{", ".join(str(int(x)) for x in t2[:12])}...]</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="info-box">Distance de Hamming : <b>{float(np.mean(t1!=t2)):.2%}</b> — templates décorrélés ✅</div>', unsafe_allow_html=True)
 
-            # ── Tab 1 : Bio-Hashing ──
-            with tab1:
-                st.markdown("### 🔑 Bio-Hashing")
-                st.markdown("""
-<div class="info-box">
-<b>Principe :</b> Le template est projeté sur une matrice pseudo-aléatoire générée par un sel secret,
-binarisé, puis hashé via HMAC-SHA256.<br>
-<b>Avantage :</b> Même si le hash est volé, il est impossible de reconstruire le visage original.
-Si la base est compromise, on change le sel → nouveau hash différent.
-</div>""", unsafe_allow_html=True)
-
-                h, salt, vec = bio_hash(embedding)
-                c1, c2 = st.columns(2)
-                with c1:
-                    st.markdown("**Hash stocké (HMAC-SHA256)**")
-                    st.markdown(f'<div class="hash-box">{h}</div>', unsafe_allow_html=True)
-                    st.markdown("**Sel aléatoire (32 octets)**")
-                    st.markdown(f'<div class="hash-box">{salt.hex()}</div>', unsafe_allow_html=True)
-                with c2:
-                    st.markdown("**Vecteur binaire (64 bits)**")
-                    bits = "".join(str(b) for b in vec[:64])
-                    st.markdown(f'<div class="hash-box">{bits}</div>', unsafe_allow_html=True)
-                    st.markdown("""
-<div class="info-box" style="margin-top:0.5rem">
-✅ Template brut : <b>NON STOCKÉ</b><br>
-✅ Révocable : changer le sel<br>
-✅ Non-inversible : HMAC one-way
-</div>""", unsafe_allow_html=True)
-
-                # Vérification
-                st.markdown("**Test de vérification :**")
-                h2, _, _ = bio_hash(embedding, salt=salt)
-                if h == h2:
-                    st.success("✅ Même image + même sel → Hash identique (authentification réussie)")
-                else:
-                    st.error("❌ Hash différent")
-
-                h3, _, _ = bio_hash(embedding, salt=os.urandom(32))
-                st.info(f"🔄 Avec un sel différent → hash totalement différent : `{h3[:32]}...`")
-
-            # ── Tab 2 : Cancelable ──
-            with tab2:
-                st.markdown("### 🔄 Cancelable Biometrics")
-                st.markdown("""
-<div class="info-box">
-<b>Principe :</b> On applique une transformation F(template, clé) non-inversible et non-réversible.
-Si le template est compromis, on change la clé pour générer un nouveau template différent.
-</div>""", unsafe_allow_html=True)
-
-                key1 = os.urandom(16)
-                key2 = os.urandom(16)
-                t1 = cancelable_transform(embedding, key1)
-                t2 = cancelable_transform(embedding, key2)
-
-                c1, c2 = st.columns(2)
-                with c1:
-                    st.markdown("**Template avec Clé 1**")
-                    st.markdown(f'<div class="hash-box">Clé : {key1.hex()[:16]}...<br>Template : [{", ".join(str(int(x)) for x in t1[:12])}...]</div>', unsafe_allow_html=True)
-                with c2:
-                    st.markdown("**Template avec Clé 2 (même visage !)**")
-                    st.markdown(f'<div class="hash-box">Clé : {key2.hex()[:16]}...<br>Template : [{", ".join(str(int(x)) for x in t2[:12])}...]</div>', unsafe_allow_html=True)
-
-                hamming = float(np.mean(t1 != t2))
-                st.markdown(f"""
-<div class="info-box">
-Distance de Hamming entre les deux templates (même visage, clés différentes) : <b>{hamming:.2%}</b><br>
-→ Les templates sont <b>décorrélés</b> : impossible de lier les deux bases de données entre elles.
-</div>""", unsafe_allow_html=True)
-
-            # ── Tab 3 : Anonyme ──
-            with tab3:
-                st.markdown("### 🎭 Biométrie Anonyme")
-                st.markdown("""
-<div class="info-box">
-<b>Principe :</b> Le template est transformé en identifiant anonyme via SHA-256 + sel.
-Aucun nom n'est associé dans la base. Un tiers de confiance peut vérifier sans connaître l'identité.
-</div>""", unsafe_allow_html=True)
-
-                anon1, salt1 = anonymize(embedding)
-                anon2, salt2 = anonymize(embedding)
-
-                st.markdown("**ID anonyme généré**")
-                st.markdown(f'<div class="hash-box">{anon1}</div>', unsafe_allow_html=True)
-                st.markdown("**Même visage, sel différent → ID totalement différent**")
-                st.markdown(f'<div class="hash-box">{anon2}</div>', unsafe_allow_html=True)
-
-                st.markdown("""
-<div class="info-box">
-✅ Aucun nom stocké dans la base<br>
-✅ Lien identité → biométrie impossible sans le sel<br>
-✅ Conforme RGPD pour les systèmes à tiers de confiance
-</div>""", unsafe_allow_html=True)
+        with tab3:
+            st.markdown("### 🎭 Biométrie Anonyme")
+            st.markdown('<div class="info-box">SHA-256(template + sel) → identifiant anonyme. Aucun nom stocké. Conforme RGPD.</div>', unsafe_allow_html=True)
+            a1, _ = anonymize(emb)
+            a2, _ = anonymize(emb)
+            st.markdown("**ID — Sel 1**")
+            st.markdown(f'<div class="hash-box">{a1}</div>', unsafe_allow_html=True)
+            st.markdown("**ID — Sel 2 (même visage)**")
+            st.markdown(f'<div class="hash-box">{a2}</div>', unsafe_allow_html=True)
+            st.markdown('<div class="info-box">✅ Aucun nom stocké<br>✅ Lien identité → biométrie impossible sans le sel</div>', unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────
 # PAGE 4 — COMPARATIF
 # ─────────────────────────────────────────────
 elif page == "📊 Comparatif":
-    st.markdown('<div class="main-title">📊 Comparatif des méthodes</div>', unsafe_allow_html=True)
-    st.markdown('<div class="sub-title">Tableau de synthèse des méthodes de protection biométrique.</div>', unsafe_allow_html=True)
-
-    import pandas as pd
-
+    st.markdown('<div class="main-title">📊 Comparatif</div>', unsafe_allow_html=True)
     df = pd.DataFrame([
-        {
-            "Méthode":         "Template brut",
-            "Révocable":       "❌",
-            "Non-inversible":  "❌",
-            "Anonyme":         "❌",
-            "Complexité":      "⭐",
-            "Usage":           "Démo / prototypage uniquement"
-        },
-        {
-            "Méthode":         "Bio-Hashing",
-            "Révocable":       "✅",
-            "Non-inversible":  "✅",
-            "Anonyme":         "⚠️ Partielle",
-            "Complexité":      "⭐⭐",
-            "Usage":           "Authentification serveur"
-        },
-        {
-            "Méthode":         "Cancelable Biometrics",
-            "Révocable":       "✅",
-            "Non-inversible":  "✅",
-            "Anonyme":         "⚠️ Partielle",
-            "Complexité":      "⭐⭐",
-            "Usage":           "Multi-systèmes (clé différente par DB)"
-        },
-        {
-            "Méthode":         "Biométrie Anonyme",
-            "Révocable":       "⚠️ Partielle",
-            "Non-inversible":  "✅",
-            "Anonyme":         "✅",
-            "Complexité":      "⭐⭐⭐",
-            "Usage":           "RGPD, tiers de confiance"
-        },
-        {
-            "Méthode":         "Fuzzy Vault (crypto)",
-            "Révocable":       "⚠️ Partielle",
-            "Non-inversible":  "✅",
-            "Anonyme":         "✅",
-            "Complexité":      "⭐⭐⭐⭐",
-            "Usage":           "Haute sécurité + chiffrement"
-        },
+        {"Méthode":"Template brut",        "Révocable":"❌","Non-inversible":"❌","Anonyme":"❌", "Complexité":"⭐",     "Usage":"Démo uniquement"},
+        {"Méthode":"Bio-Hashing",          "Révocable":"✅","Non-inversible":"✅","Anonyme":"⚠️","Complexité":"⭐⭐",    "Usage":"Auth serveur"},
+        {"Méthode":"Cancelable",           "Révocable":"✅","Non-inversible":"✅","Anonyme":"⚠️","Complexité":"⭐⭐",    "Usage":"Multi-systèmes"},
+        {"Méthode":"Biométrie Anonyme",    "Révocable":"⚠️","Non-inversible":"✅","Anonyme":"✅", "Complexité":"⭐⭐⭐",   "Usage":"RGPD"},
+        {"Méthode":"Fuzzy Vault (crypto)", "Révocable":"⚠️","Non-inversible":"✅","Anonyme":"✅", "Complexité":"⭐⭐⭐⭐",  "Usage":"Haute sécurité"},
     ])
-
     st.dataframe(df, use_container_width=True, hide_index=True)
-
     st.markdown("---")
-    st.markdown("### 🔐 Recommandations production")
-    cols = st.columns(2)
-    with cols[0]:
-        st.markdown("""
-<div class="info-box">
-✅ Ne jamais stocker le template brut en base de données<br>
-✅ Toujours appliquer une transformation non-inversible<br>
-✅ Combiner avec liveness detection (anti-spoofing)<br>
-✅ Chiffrer la base avec AES-256 (clé dans un HSM)<br>
-✅ Utiliser l'authentification multi-facteur (biométrie + PIN)
-</div>""", unsafe_allow_html=True)
-
-    with cols[1]:
-        st.markdown("""
-<div class="info-box">
-📌 <b>Cette app utilise :</b><br>
-• MediaPipe FaceMesh — 468 landmarks 3D<br>
-• Embedding 1404D normalisé (L2)<br>
-• Similarité cosinus pour la comparaison<br>
-• Anti-spoofing 3 métriques (blur/texture/sat)<br>
-• Bio-Hash + Cancelable + Anonyme en démo
-</div>""", unsafe_allow_html=True)
-
-    st.markdown("---")
-    st.markdown(f"**Session actuelle :** {len(database)} utilisateur(s) enregistré(s)")
-    if database:
-        st.markdown("**Utilisateurs :** " + ", ".join(database.keys()))
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("### 🔐 Recommandations")
+        st.markdown('<div class="info-box">✅ Ne jamais stocker le template brut<br>✅ Transformation non-inversible obligatoire<br>✅ Liveness detection combinée<br>✅ Chiffrement AES-256 + HSM<br>✅ Multi-facteur : biométrie + PIN</div>', unsafe_allow_html=True)
+    with c2:
+        st.markdown("### 📌 Stack de cette app")
+        st.markdown('<div class="info-box">• Détection : variance locale (ROI)<br>• Embedding : HOG (scikit-image)<br>• Comparaison : similarité cosinus<br>• Anti-spoofing : Laplacian + texture + sat.<br>• Protection : Bio-Hash + Cancelable + Anonyme</div>', unsafe_allow_html=True)
+    st.info(f"Session : {len(database)} utilisateur(s) — {', '.join(database.keys()) if database else 'aucun'}")
