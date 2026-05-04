@@ -172,13 +172,13 @@ def anonymize(encoding):
 st.sidebar.markdown("## 🔐 Lab Biométrie")
 st.sidebar.markdown("---")
 page = st.sidebar.radio("Navigation", [
-    "📸 Enrollment", "🔓 Login", "🛡️ Protection avancée", "📊 Comparatif"
+    " Enrollment", " Login", " Protection avancée", " Comparatif"
 ])
 st.sidebar.markdown("---")
-st.sidebar.markdown(f"**👥 Utilisateurs :** {len(database)}")
+st.sidebar.markdown(f"** Utilisateurs :** {len(database)}")
 for n in database:
     st.sidebar.markdown(f"- {n}")
-if st.sidebar.button("🗑️ Réinitialiser"):
+if st.sidebar.button(" Réinitialiser"):
     st.session_state.database = {}
     st.rerun()
 
@@ -186,7 +186,7 @@ if st.sidebar.button("🗑️ Réinitialiser"):
 # PAGE 1 — ENROLLMENT
 # ─────────────────────────────────────────────
 if page == "📸 Enrollment":
-    st.markdown('<div class="main-title">📸 Enregistrement</div>', unsafe_allow_html=True)
+    st.markdown('<div class="main-title"> Enregistrement</div>', unsafe_allow_html=True)
     st.markdown('<div class="sub-title">Capturez votre visage pour l\'enregistrer dans la base biométrique.</div>', unsafe_allow_html=True)
 
     col1, col2 = st.columns(2)
@@ -198,15 +198,15 @@ if page == "📸 Enrollment":
             pil_img = Image.open(img_file)
             st.image(draw_face_box(pil_img), caption="Détection ROI", use_container_width=True)
 
-            if st.button("✅ Enregistrer", use_container_width=True):
+            if st.button(" Enregistrer", use_container_width=True):
                 if not name.strip():
                     st.error("❌ Entrez un nom d'abord")
                 else:
                     emb = enroll_user(name.strip(), pil_img)
-                    st.success(f"✅ **{name}** enregistré ! Embedding HOG : {len(emb)} dimensions")
+                    st.success(f" **{name}** enregistré ! Embedding HOG : {len(emb)} dimensions")
 
     with col2:
-        st.markdown("### ℹ️ Pipeline")
+        st.markdown("###  Pipeline")
         st.markdown("""
 <div class="info-box">
 <b>1. ROI</b> — Sélection de la zone la plus active (variance max).<br><br>
@@ -220,20 +220,20 @@ if page == "📸 Enrollment":
 # ─────────────────────────────────────────────
 # PAGE 2 — LOGIN
 # ─────────────────────────────────────────────
-elif page == "🔓 Login":
-    st.markdown('<div class="main-title">🔓 Connexion biométrique</div>', unsafe_allow_html=True)
+elif page == " Login":
+    st.markdown('<div class="main-title"> Connexion biométrique</div>', unsafe_allow_html=True)
     st.markdown('<div class="sub-title">Authentification faciale + vérification de vivacité.</div>', unsafe_allow_html=True)
 
     if not database:
-        st.warning("⚠️ Aucun utilisateur enregistré. Allez d'abord sur **Enrollment**.")
+        st.warning(" Aucun utilisateur enregistré. Allez d'abord sur **Enrollment**.")
     else:
-        img_file = st.camera_input("📷 Capturez votre visage")
+        img_file = st.camera_input(" Capturez votre visage")
         if img_file:
             pil_img = Image.open(img_file)
             st.image(draw_face_box(pil_img), caption="Détection", use_container_width=True)
 
             # Anti-Spoofing
-            st.markdown("### 🔍 Vivacité")
+            st.markdown("###  Vivacité")
             spoof  = anti_spoofing(pil_img)
             cols   = st.columns(3)
             passed = 0
@@ -245,13 +245,13 @@ elif page == "🔓 Login":
 
             st.markdown(f"**Score : {passed}/3**")
             if passed < 2:
-                st.error("🚨 Image suspecte — possible attaque !")
+                st.error(" Image suspecte — possible attaque !")
                 st.stop()
-            st.success("✅ Vivacité confirmée")
+            st.success(" Vivacité confirmée")
             st.markdown("---")
 
             # Reconnaissance
-            st.markdown("### 🧠 Reconnaissance")
+            st.markdown("###  Reconnaissance")
             best, score, all_scores = recognize_user(pil_img)
             for n, s in sorted(all_scores.items(), key=lambda x: -x[1]):
                 st.markdown(f"**{n}** — {s:.2%}")
@@ -268,21 +268,21 @@ elif page == "🔓 Login":
 # ─────────────────────────────────────────────
 # PAGE 3 — PROTECTION
 # ─────────────────────────────────────────────
-elif page == "🛡️ Protection avancée":
-    st.markdown('<div class="main-title">🛡️ Méthodes de protection</div>', unsafe_allow_html=True)
+elif page == " Protection avancée":
+    st.markdown('<div class="main-title"> Méthodes de protection</div>', unsafe_allow_html=True)
     st.markdown('<div class="sub-title">Démonstration des techniques de protection des templates biométriques.</div>', unsafe_allow_html=True)
 
     img_file = st.camera_input("📷 Image de démonstration")
     if img_file:
         pil_img = Image.open(img_file)
         emb = get_embedding(pil_img)
-        st.success(f"✅ Embedding HOG extrait — {len(emb)} dimensions")
+        st.success(f" Embedding HOG extrait — {len(emb)} dimensions")
         st.markdown("---")
 
         tab1, tab2, tab3 = st.tabs(["🔑 Bio-Hashing", "🔄 Cancelable", "🎭 Anonyme"])
 
         with tab1:
-            st.markdown("### 🔑 Bio-Hashing")
+            st.markdown("###  Bio-Hashing")
             st.markdown('<div class="info-box">Projection sur matrice pseudo-aléatoire (sel secret) → vecteur binaire → HMAC-SHA256. Le template brut n\'est jamais stocké. Si compromis : changer le sel → nouveau hash.</div>', unsafe_allow_html=True)
             h, salt, vec = bio_hash(emb)
             c1, c2 = st.columns(2)
@@ -294,14 +294,14 @@ elif page == "🛡️ Protection avancée":
             with c2:
                 st.markdown("**Vecteur binaire (64 bits)**")
                 st.markdown(f'<div class="hash-box">{"".join(str(b) for b in vec[:64])}</div>', unsafe_allow_html=True)
-                st.markdown('<div class="info-box">✅ Template brut : NON STOCKÉ<br>✅ Révocable<br>✅ Non-inversible</div>', unsafe_allow_html=True)
+                st.markdown('<div class="info-box"> Template brut : NON STOCKÉ<br> Révocable<br> Non-inversible</div>', unsafe_allow_html=True)
             h2, _, _ = bio_hash(emb, salt=salt)
-            st.success("✅ Même sel → hash identique (auth OK)") if h == h2 else st.error("❌")
+            st.success(" Même sel → hash identique (auth OK)") if h == h2 else st.error("❌")
             h3, _, _ = bio_hash(emb, salt=os.urandom(32))
-            st.info(f"🔄 Sel différent → `{h3[:32]}...`")
+            st.info(f" Sel différent → `{h3[:32]}...`")
 
         with tab2:
-            st.markdown("### 🔄 Cancelable Biometrics")
+            st.markdown("###  Cancelable Biometrics")
             st.markdown('<div class="info-box">Permutation + seuillage par clé secrète. Même visage + clé différente = template totalement différent. Révocable en changeant la clé.</div>', unsafe_allow_html=True)
             k1, k2 = os.urandom(16), os.urandom(16)
             t1, t2 = cancelable_transform(emb, k1), cancelable_transform(emb, k2)
@@ -312,10 +312,10 @@ elif page == "🛡️ Protection avancée":
             with c2:
                 st.markdown("**Clé 2 (même visage)**")
                 st.markdown(f'<div class="hash-box">{k2.hex()[:16]}...<br>[{", ".join(str(int(x)) for x in t2[:12])}...]</div>', unsafe_allow_html=True)
-            st.markdown(f'<div class="info-box">Distance de Hamming : <b>{float(np.mean(t1!=t2)):.2%}</b> — templates décorrélés ✅</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="info-box">Distance de Hamming : <b>{float(np.mean(t1!=t2)):.2%}</b> — templates décorrélés </div>', unsafe_allow_html=True)
 
         with tab3:
-            st.markdown("### 🎭 Biométrie Anonyme")
+            st.markdown("###  Biométrie Anonyme")
             st.markdown('<div class="info-box">SHA-256(template + sel) → identifiant anonyme. Aucun nom stocké. Conforme RGPD.</div>', unsafe_allow_html=True)
             a1, _ = anonymize(emb)
             a2, _ = anonymize(emb)
@@ -323,12 +323,12 @@ elif page == "🛡️ Protection avancée":
             st.markdown(f'<div class="hash-box">{a1}</div>', unsafe_allow_html=True)
             st.markdown("**ID — Sel 2 (même visage)**")
             st.markdown(f'<div class="hash-box">{a2}</div>', unsafe_allow_html=True)
-            st.markdown('<div class="info-box">✅ Aucun nom stocké<br>✅ Lien identité → biométrie impossible sans le sel</div>', unsafe_allow_html=True)
+            st.markdown('<div class="info-box"> Aucun nom stocké<br> Lien identité → biométrie impossible sans le sel</div>', unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────
 # PAGE 4 — COMPARATIF
 # ─────────────────────────────────────────────
-elif page == "📊 Comparatif":
+elif page == " Comparatif":
     st.markdown('<div class="main-title">📊 Comparatif</div>', unsafe_allow_html=True)
     df = pd.DataFrame([
         {"Méthode":"Template brut",        "Révocable":"❌","Non-inversible":"❌","Anonyme":"❌", "Complexité":"⭐",     "Usage":"Démo uniquement"},
@@ -341,9 +341,9 @@ elif page == "📊 Comparatif":
     st.markdown("---")
     c1, c2 = st.columns(2)
     with c1:
-        st.markdown("### 🔐 Recommandations")
-        st.markdown('<div class="info-box">✅ Ne jamais stocker le template brut<br>✅ Transformation non-inversible obligatoire<br>✅ Liveness detection combinée<br>✅ Chiffrement AES-256 + HSM<br>✅ Multi-facteur : biométrie + PIN</div>', unsafe_allow_html=True)
+        st.markdown("###  Recommandations")
+        st.markdown('<div class="info-box"> Ne jamais stocker le template brut<br> Transformation non-inversible obligatoire<br> Liveness detection combinée<br> Chiffrement AES-256 + HSM<br> Multi-facteur : biométrie + PIN</div>', unsafe_allow_html=True)
     with c2:
-        st.markdown("### 📌 Stack de cette app")
+        st.markdown("###  Stack de cette app")
         st.markdown('<div class="info-box">• Détection : variance locale (ROI)<br>• Embedding : HOG (scikit-image)<br>• Comparaison : similarité cosinus<br>• Anti-spoofing : Laplacian + texture + sat.<br>• Protection : Bio-Hash + Cancelable + Anonyme</div>', unsafe_allow_html=True)
     st.info(f"Session : {len(database)} utilisateur(s) — {', '.join(database.keys()) if database else 'aucun'}")
